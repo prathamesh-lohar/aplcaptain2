@@ -255,7 +255,7 @@ function App() {
             <h3>Current Player</h3>
             <div className="player-card-mobile">
               <img 
-                src={currentPlayer.photo?.startsWith('http') ? currentPlayer.photo : `${API_URL}${currentPlayer.photo}`} 
+                src={currentPlayer.photo?.startsWith('http') ? currentPlayer.photo : `${SOCKET_URL}uploads${currentPlayer.photo}`} 
                 alt={currentPlayer.name}
                 className="player-photo-mobile"
                 onError={(e) => e.target.src = PLACEHOLDER_IMAGE}
