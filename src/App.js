@@ -296,7 +296,7 @@ function App() {
                       onClick={() => handleBid(0)}
                     >
                       <span className="bid-button-text">
-                        {bidSuccess ? '✓ Bid Placed!' : `₹${getNextBidAmount(0)} (Base)`}
+                        {bidSuccess ? '✓ Bid Placed!' : ` ${getNextBidAmount(0)} (Base)`}
                       </span>
                     </button>
                   )}
@@ -306,7 +306,7 @@ function App() {
                       onClick={() => handleBid(5)}
                     >
                       <span className="bid-button-text">
-                        {bidSuccess ? '✓ Bid Placed!' : `+₹5 (₹${getNextBidAmount(5)})`}
+                        {bidSuccess ? '✓ Bid Placed!' : `+ 5 ( ${getNextBidAmount(5)})`}
                       </span>
                     </button>
                   )}
@@ -316,7 +316,7 @@ function App() {
                       onClick={() => handleBid(10)}
                     >
                       <span className="bid-button-text">
-                        {bidSuccess ? '✓ Bid Placed!' : `+₹10 (₹${getNextBidAmount(10)})`}
+                        {bidSuccess ? '✓ Bid Placed!' : `+ 10 ( ${getNextBidAmount(10)})`}
                       </span>
                     </button>
                   )}
