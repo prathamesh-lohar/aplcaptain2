@@ -3,8 +3,8 @@ import io from 'socket.io-client';
 import LoadingAnimation from './LoadingAnimation';
 import './App.css';
 
-const SOCKET_URL = process.env.REACT_APP_SOCKET_URL;
-const API_URL = process.env.REACT_APP_API_URL;
+const SOCKET_URL = "https://aplplayerauction.onrender.com/";
+const API_URL = "https://aplplayerauction.onrender.com/api";
 const PLACEHOLDER_IMAGE = `${SOCKET_URL}uploads/defaultPlayer.png`;
 const DEFAULT_TEAM_LOGO = `${SOCKET_URL}uploads/defaultTeam.png`;
 function App() {
@@ -440,7 +440,9 @@ function App() {
           </div>
         </div>
 
-        {/* Current Player */}
+        {/* Current Player */
+        console.log('Current player photo URL:', currentPlayer?.photo)
+        }
         {currentPlayer ? (
           <div className="current-player-section">
             <div className="section-header">
@@ -449,17 +451,20 @@ function App() {
             <div className="player-card-mobile">
               <div className="player-photo-wrapper">
                 <img 
+                  
                   src={(currentPlayer.photo && currentPlayer.photo.trim() !== '' && !currentPlayer.photo.includes('placeholder'))
                     ? (currentPlayer.photo.startsWith('http') 
                         ? currentPlayer.photo 
-                        : `${SOCKET_URL}${currentPlayer.photo.replace(/^\/+/, '')}`)
+                        : `${SOCKET_URL}uploads/${currentPlayer.photo.replace(/^\/+/, '')}`)
                     : PLACEHOLDER_IMAGE
                   } 
+                 
                   alt={currentPlayer.name}
                   className="player-photo-mobile"
                   onError={(e) => { 
                     e.target.onerror = null;
                     e.target.src = PLACEHOLDER_IMAGE; 
+                  
                   }}
                 />
                 <div className="photo-overlay"></div>
