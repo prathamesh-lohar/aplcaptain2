@@ -275,9 +275,9 @@ function App() {
             background: 'rgba(255, 255, 255, 0.9)' }}>
             
           <img src="/assets/main_logo.png" alt="App Logo" style= {{
-            alignSelf: 'center',
-            left: '50%',
-            marginLeft: '80px',
+           display: 'block',
+            margin: '0 auto',
+            paddingBottom: '20px'
           }
           }
           className="login-logo" />
