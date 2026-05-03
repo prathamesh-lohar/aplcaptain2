@@ -1,12 +1,60 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 import LoadingAnimation from './LoadingAnimation';
-import './App.css';
+import LoginView from './components/LoginView';
+import SoldAnimationOverlay from './components/SoldAnimationOverlay';
+import TeamHeader from './components/TeamHeader';
+import BudgetProgress from './components/BudgetProgress';
+import CurrentAuctionSection from './components/CurrentAuctionSection';
+import PlayersSection from './components/PlayersSection';
 
-const SOCKET_URL = "https://aplplayerauction.onrender.com/";
-const API_URL = "https://aplplayerauction.onrender.com/api";
-const PLACEHOLDER_IMAGE = `${SOCKET_URL}uploads/defaultPlayer.png`;
-const DEFAULT_TEAM_LOGO = `${SOCKET_URL}uploads/defaultTeam.png`;
+const SOCKET_URL = process.env.REACT_APP_SOCKET_URL;
+const API_URL = process.env.REACT_APP_API_URL;
+const MAX_SQUAD_SIZE = Number.parseInt(process.env.REACT_APP_MAX_SQUAD_SIZE, 10) || 11;
+
+// Ensure URLs end with a slash for proper path construction
+const normalizeUrl = (url) => url && (url.endsWith('/') ? url : url + '/');
+const BASE_URL = normalizeUrl(SOCKET_URL);
+
+const PLACEHOLDER_IMAGE = 'https://res.cloudinary.com/dz8q0fb8m/image/upload/v1772197979/defaultPlayer_kad3xb.png';
+const DEFAULT_TEAM_LOGO = 'https://res.cloudinary.com/dz8q0fb8m/image/upload/v1772197980/defaultTeam_x7thxe.png';
+
+const buildImgUrl = (path, base, placeholder) => {
+  if (!path || path.trim() === '') return placeholder;
+
+  // If it's a Cloudinary URL, return as-is
+  if (path.startsWith('http')) return path;
+
+  // Normalize base URL to ensure it has protocol and trailing slash
+  let normalizedBase = base;
+  if (!normalizedBase.startsWith('http')) {
+    normalizedBase = 'http://localhost:5000/';
+  }
+  normalizedBase = normalizedBase.endsWith('/')
+    ? normalizedBase
+    : normalizedBase + '/';
+
+  // Clean the path - remove leading slashes
+  const cleanPath = path.replace(/^\/+/, '');
+
+  // Construct the full URL
+  return `${normalizedBase}${cleanPath}`;
+};
+
+// Helper function to get optimized player photo
+const getOptimizedPlayerPhoto = (photoUrl) => {
+  if (!photoUrl) return PLACEHOLDER_IMAGE;
+  if (photoUrl.startsWith('http')) return photoUrl;
+  return buildImgUrl(photoUrl, BASE_URL, PLACEHOLDER_IMAGE);
+};
+
+// Helper function to get optimized team logo
+const getOptimizedTeamLogo = (logoUrl) => {
+  if (!logoUrl) return DEFAULT_TEAM_LOGO;
+  if (logoUrl.startsWith('http')) return logoUrl;
+  return buildImgUrl(logoUrl, BASE_URL, DEFAULT_TEAM_LOGO);
+};
+
 function App() {
   const [socket, setSocket] = useState(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -20,34 +68,17 @@ function App() {
   const [bidSuccess, setBidSuccess] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [config, setConfig] = useState({
-    timerDuration: 20,
-    initialBudget: 110,
-    basePrice: 30,
-    minBasePrice: 30,
-    maxSquadSize: 11,
-    maxCaptains: 20
-  });
-
-  // Fetch config on mount
-  useEffect(() => {
-    const fetchConfig = async () => {
-      try {
-        console.log('Fetching config from:', `${API_URL}/config`);
-        const response = await fetch(`${API_URL}/config`);
-        const data = await response.json();
-        console.log('Config received:', data);
-        if (data.success) {
-          setConfig(data.config);
-          console.log('Config updated:', data.config);
-        }
-      } catch (error) {
-        console.error('Failed to fetch config:', error);
-        // Use default config if fetch fails
-      }
-    };
-    fetchConfig();
-  }, []);
+  const [showAllPlayers, setShowAllPlayers] = useState(false);
+  const [allPlayers, setAllPlayers] = useState([]);
+  const [loadingPlayers, setLoadingPlayers] = useState(false);
+  const [filterStatus, setFilterStatus] = useState('all'); // all, sold, unsold, remaining
+  const [showSoldAnimation, setShowSoldAnimation] = useState(false);
+  const [soldInfo, setSoldInfo] = useState(null);
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [maxSquadSize, setMaxSquadSize] = useState(11);
+  const [initialBudget, setInitialBudget] = useState(110);
+  const [minBasePrice, setMinBasePrice] = useState(5);
+  const soldAnimationTimeout = useRef(null);
 
   useEffect(() => {
     const newSocket = io(SOCKET_URL, {
@@ -60,59 +91,95 @@ function App() {
     // Connection events
     newSocket.on('connect', () => {
       setIsConnected(true);
+      console.log('🔌 Captain app connected to server');
+      console.log('Socket ID:', newSocket.id);
     });
 
     newSocket.on('disconnect', () => {
       setIsConnected(false);
+      console.log('Captain app disconnected from server');
     });
 
-    // Check for saved credentials on mount
-    const savedTeamId = localStorage.getItem('captain_teamId');
-    const savedPin = localStorage.getItem('captain_pin');
-    
-    if (savedTeamId && savedPin) {
-      setTeamId(savedTeamId);
-      setPin(savedPin);
-      // Auto-login with saved credentials
-      newSocket.emit('team:login', { teamId: savedTeamId, pin: savedPin });
-    }
+    newSocket.on('reconnect', () => {
+      console.log('Captain app reconnected to server');
+    });
+
+    // ========================================
+    // SET UP ALL LISTENERS FIRST (before auto-login)
+    // ========================================
 
     // Auth events
     newSocket.on('auth:success', (data) => {
+      console.log('🔓 auth:success event received');
+      console.log('Team data:', data.team);
       if (data.team) {
+        console.log('✅ Auth successful, team:', data.team.teamName);
         setIsAuthenticated(true);
         setTeamData(data.team);
         setError('');
         setIsLoading(false);
-      }
-    });
-
-    // Handle current auction state (when reconnecting)
-    newSocket.on('auction:state', (data) => {
-      console.log('Received auction:state:', data); // Debug log
-      if (data.state && data.state.isActive && !data.state.isPaused && data.state.currentPlayer) {
-        setCurrentPlayer(data.state.currentPlayer);
-        setCurrentBid({
-          amount: data.state.currentHighBid?.amount || data.state.currentPlayer.basePrice,
-          teamName: data.state.currentHighBid?.team?.teamName || 'Base Price'
-        });
-        setTimerValue(data.timerValue || 20);
-      } else if (data.state && !data.state.isActive) {
-        // Clear current player if auction is not active
-        setCurrentPlayer(null);
+        setIsInitializing(false);
+        console.log('⏳ Waiting for auction:state event after successful auth...');
       }
     });
 
     newSocket.on('auth:error', (data) => {
       setError(data.message);
       setIsLoading(false);
+      setIsInitializing(false);
       // Clear invalid credentials
       localStorage.removeItem('captain_teamId');
       localStorage.removeItem('captain_pin');
     });
 
-    // Auction events
+      // Auction events
+    // Listen for current auction state (same logic as big-screen for robustness)
+    newSocket.on('auction:state', (data) => {
+      console.log('📡 Captain app received auction:state event');
+      console.log('📦 Full data:', JSON.stringify(data, null, 2));
+      
+      if (!data) {
+        console.log('⚠️ auction:state data is null/undefined');
+        return;
+      }
+      
+      if (!data.state) {
+        console.log('⚠️ No state property in auction:state data');
+        console.log('Data keys:', Object.keys(data));
+        return;
+      }
+      
+      if (data.state.maxSquadSize) setMaxSquadSize(data.state.maxSquadSize);
+      if (data.state.initialBudget) setInitialBudget(data.state.initialBudget);
+      if (data.state.minBasePrice !== undefined) setMinBasePrice(data.state.minBasePrice);
+
+      console.log('Auction state properties:', {
+        isActive: data.state.isActive,
+        isPaused: data.state.isPaused,
+        hasCurrentPlayer: !!data.state.currentPlayer,
+        currentPlayerName: data.state.currentPlayer?.name,
+        timerValue: data.timerValue
+      });
+      
+      // If there's a current player, show it (same as big-screen)
+      if (data.state.currentPlayer) {
+        console.log('✅ Setting current player from auction:state:', data.state.currentPlayer.name);
+        setCurrentPlayer(data.state.currentPlayer);
+        setCurrentBid({
+          amount: data.state.currentHighBid?.amount || data.state.currentPlayer.basePrice,
+          teamName: data.state.currentHighBid?.team?.teamName || 'No Bids Yet'
+        });
+        setTimerValue(data.timerValue || 20);
+        console.log('✅ Current player state updated successfully');
+      } else {
+        console.log('❌ No current player in auction state (state.currentPlayer is null/undefined)');
+        setCurrentPlayer(null);
+        setTimerValue(0);
+      }
+    });
+
     newSocket.on('auction:started', (data) => {
+      console.log('Auction started:', data);
       setCurrentPlayer(data.player);
       setCurrentBid({ amount: data.basePrice, teamName: 'Base Price' });
       setTimerValue(data.timerValue);
@@ -130,7 +197,7 @@ function App() {
         setTimeout(() => setBidSuccess(false), 2000);
         
         // Update remaining purse immediately
-        if (data.team && data.team.remainingPoints !== undefined) {
+        if (data.team?.remainingPoints !== undefined) {
           setTeamData(prev => ({
             ...prev,
             remainingPoints: data.team.remainingPoints,
@@ -149,8 +216,33 @@ function App() {
     });
 
     newSocket.on('player:sold', (data) => {
+      console.log('🎯 Player sold event:', data);
+      
+      // Clear any existing sold animation
+      if (soldAnimationTimeout.current) {
+        clearTimeout(soldAnimationTimeout.current);
+      }
+      
+      // Show sold animation
+      setSoldInfo({
+        player: data.player,
+        team: data.team,
+        amount: data.amount,
+        isMyTeam: teamData?.id && data.team?.id && data.team.id.toString() === teamData.id.toString()
+      });
+      setShowSoldAnimation(true);
+      
+      // Hide animation after 5 seconds
+      const timeout = setTimeout(() => {
+        setShowSoldAnimation(false);
+        setSoldInfo(null);
+        soldAnimationTimeout.current = null;
+      }, 5000);
+      soldAnimationTimeout.current = timeout;
+      
+      // Update team data if this team won the player
       setTeamData(prev => {
-        if (prev && data.team && data.team.id && 
+        if (prev && data.team?.id && 
             data.team.id.toString() === prev.id.toString()) {
           return {
             ...prev,
@@ -161,7 +253,33 @@ function App() {
         }
         return prev;
       });
+      
       setCurrentPlayer(null);
+      
+      // Refresh all players list if it's being viewed
+      if (showAllPlayers) {
+        fetchAllPlayers();
+      }
+    });
+
+    newSocket.on('auction:reset', (data) => {
+      console.log('Auction reset:', data.message);
+      // Reset auction state
+      setCurrentPlayer(null);
+      setTimerValue(0);
+      setCurrentBid({ amount: 5, teamName: '' });
+      
+      // Refresh all players list to show player back as UNSOLD
+      if (showAllPlayers) {
+        fetchAllPlayers();
+      }
+    });
+
+    // Listen for auction ended event
+    newSocket.on('auction:ended', (data) => {
+      console.log('Auction ended:', data);
+      setCurrentPlayer(null);
+      setTimerValue(0);
     });
 
     newSocket.on('bid:error', (data) => {
@@ -174,7 +292,40 @@ function App() {
       setTimeout(() => setBidSuccess(false), 2000);
     });
 
+    // ========================================
+    // AUTO-LOGIN (after all listeners are set up)
+    // ========================================
+    console.log('✅ All socket listeners registered');
+    
+    // Check for saved credentials and auto-login
+    const savedTeamId = localStorage.getItem('captain_teamId');
+    const savedPin = localStorage.getItem('captain_pin');
+    
+    if (savedTeamId && savedPin) {
+      setTeamId(savedTeamId);
+      setPin(savedPin);
+      console.log('🔐 Auto-login with saved credentials for team:', savedTeamId);
+      // Use setTimeout to ensure listeners are fully registered
+      setTimeout(() => {
+        console.log('📤 Emitting team:login event');
+        newSocket.emit('team:login', { teamId: savedTeamId, pin: savedPin });
+      }, 100);
+      
+      // Set timeout to stop initializing if auth takes too long (fallback)
+      setTimeout(() => {
+        console.log('⏱️ Auto-login timeout check');
+        setIsInitializing(false);
+      }, 3000);
+    } else {
+      console.log('ℹ️ No saved credentials found, waiting for manual login');
+      // No saved credentials, stop initializing and show login
+      setTimeout(() => setIsInitializing(false), 500);
+    }
+
     return () => {
+      if (soldAnimationTimeout.current) {
+        clearTimeout(soldAnimationTimeout.current);
+      }
       newSocket.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -201,26 +352,66 @@ function App() {
     setCurrentPlayer(null);
   };
 
-  const handleBid = (increment = 5) => {
+  const handleBid = (increment = 10) => {
     if (!socket || !teamData || !currentPlayer) return;
+
+    // Check if team has reached max squad size
+    const currentRosterSize = teamData.players ? teamData.players.length : 0;
+    if (currentRosterSize >= maxSquadSize) {
+      setError(`Squad full! Maximum ${maxSquadSize} players allowed`);
+      setTimeout(() => setError(''), 3000);
+      return;
+    }
 
     const nextBid = currentBid.amount + increment;
 
-    // Validate using the same logic as canBid
-    if (!canBid(increment)) {
-      const maxAllowed = getMaxAllowedBid();
-      const playersNeeded = config.maxSquadSize - teamData.rosterSlotsFilled - 1;
-      setError(`Cannot bid ${nextBid}. Max allowed: ${maxAllowed} (need ${playersNeeded * config.minBasePrice} for ${playersNeeded} more players)`);
-      setTimeout(() => setError(''), 4000);
+    if (nextBid > teamData.remainingPoints) {
+      setError(`Insufficient points. You only have ${teamData.remainingPoints}L remaining`);
+      setTimeout(() => setError(''), 3000);
       return;
     }
 
     socket.emit('bid:place', { amount: nextBid });
   };
 
+  const fetchAllPlayers = async () => {
+    setLoadingPlayers(true);
+    try {
+      const url = `${API_URL}/players/auction-available`;
+      console.log('Fetching players from:', url);
+      
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      console.log('Players API response:', data);
+      
+      if (data.success) {
+        console.log('Total players loaded:', data.players.length);
+        setAllPlayers(data.players);
+      } else {
+        console.error('API returned success: false', data);
+        setError(data.message || 'Failed to load players');
+        setTimeout(() => setError(''), 3000);
+      }
+    } catch (error) {
+      console.error('Error fetching players:', error);
+      setError('Failed to load players');
+      setTimeout(() => setError(''), 3000);
+    } finally {
+      setLoadingPlayers(false);
+    }
+  };
+
+  const handleViewAllPlayers = () => {
+    if (!showAllPlayers) {
+      fetchAllPlayers();
+    }
+    setShowAllPlayers(!showAllPlayers);
+  };
+
   const hasNoBids = currentBid.teamName === 'Base Price' || !currentBid.teamName || currentBid.teamName === 'No Bids Yet';
 
-  const getNextBidAmount = (increment = 5) => {
+  const getNextBidAmount = (increment = 10) => {
     // If no bids yet and increment is 0, return base price
     if (increment === 0 && hasNoBids) {
       return currentBid.amount;
@@ -228,430 +419,112 @@ function App() {
     return currentBid.amount + increment;
   };
 
-  const canBid = (increment = 5) => {
+  const canBid = (increment = 10) => {
     if (!teamData || !currentPlayer) return false;
+    
+    // Check if squad is full
+    const currentRosterSize = teamData.players ? teamData.players.length : 0;
+    if (currentRosterSize >= maxSquadSize) return false;
+    
     const nextBid = getNextBidAmount(increment);
+    const requiredRemainingSlots = maxSquadSize - currentRosterSize;
+    const requiredReservePoints = Math.max(0, requiredRemainingSlots - 1) * minBasePrice;
+    const maxAllowedBid = teamData.remainingPoints - requiredReservePoints;
     
-    // Check if team has enough points for the bid
-    if (nextBid > teamData.remainingPoints) return false;
-    
-    // Check if team can complete roster after this bid
-    const remainingAfterBid = teamData.remainingPoints - nextBid;
-    const playersStillNeeded = config.maxSquadSize - teamData.rosterSlotsFilled - 1; // -1 for current player
-    const minBudgetNeeded = playersStillNeeded * config.minBasePrice;
-    
-    return remainingAfterBid >= minBudgetNeeded;
-  };
-
-  const getMaxAllowedBid = () => {
-    if (!teamData || !currentPlayer) return 0;
-    const playersStillNeeded = config.maxSquadSize - teamData.rosterSlotsFilled - 1;
-    const minBudgetNeeded = playersStillNeeded * config.minBasePrice;
-    const maxBid = Math.max(0, teamData.remainingPoints - minBudgetNeeded);
-    
-    console.log('Max bid calculation:', {
-      maxSquadSize: config.maxSquadSize,
-      minBasePrice: config.minBasePrice,
-      rosterSlotsFilled: teamData.rosterSlotsFilled,
-      remainingPoints: teamData.remainingPoints,
-      playersStillNeeded,
-      minBudgetNeeded,
-      maxBid
-    });
-    
-    return maxBid;
+    return nextBid <= maxAllowedBid;
   };
 
   const isHighestBidder = currentBid.teamName === teamData?.teamName;
 
+  if (isInitializing) {
+    return <LoadingAnimation message="Checking authentication..." />;
+  }
+
   if (!isAuthenticated) {
     return (
-      <div className="app">
-        {/* Loading Animation */}
-        {isLoading && <LoadingAnimation message="Logging in..." />}
-        
-        <div className="login-container">
-          <div className="login-card" style={{ position: 'center',
-            background: 'rgba(255, 255, 255, 0.9)' }}>
-            
-          <img src="/assets/main_logo.png" alt="App Logo" style= {{
-           display: 'block',
-            margin: '0 auto',
-            paddingBottom: '20px'
-          }
-          }
-          className="login-logo" />
-            <h1 className="app-title" style = {{ marginTop: '-60px' }}> APL Auction</h1>
-            <h2>Captain Login</h2>
-            
-            {/* {!isConnected && (
-              <div className="connection-status connecting">
-                <span className="status-dot"></span>
-                Connecting to server...
-              </div>
-            )}
-            {isConnected && (
-              <div className="connection-status connected">
-                <span className="status-dot"></span>
-                Connected
-              </div>
-            )}
-             */}
-            <form onSubmit={handleLogin} className="login-form">
-              <div className="form-group">
-                <label htmlFor="teamId">Team ID</label>
-                <input
-                  id="teamId"
-                  type="text"
-                  value={teamId}
-                  onChange={(e) => setTeamId(e.target.value.toUpperCase())}
-                  placeholder="e.g., TEAM01"
-                  required
-                  disabled={isLoading}
-                />
-              </div>
-
-              <div className="form-group">
-                <label htmlFor="pin">PIN</label>
-                <input
-                  id="pin"
-                  type="password"
-                  value={pin}
-                  onChange={(e) => setPin(e.target.value)}
-                  placeholder="Enter 4-digit PIN"
-                  maxLength="4"
-                  pattern="[0-9]{4}"
-                  required
-                  disabled={isLoading}
-                />
-              </div>
-
-              {error && <div className="error-message">{error}</div>}
-
-              <button type="submit" className="login-button" disabled={isLoading || !isConnected}>
-                {isLoading ? (
-                  <>
-                    <span className="spinner"></span>
-                    Logging in...
-                  </>
-                ) : (
-                  'Login'
-                )}
-              </button>
-            </form>
-          </div>
-        </div>
-      </div>
+      <LoginView
+        isLoading={isLoading}
+        isConnected={isConnected}
+        teamId={teamId}
+        pin={pin}
+        error={error}
+        onTeamIdChange={setTeamId}
+        onPinChange={setPin}
+        onSubmit={handleLogin}
+      />
     );
   }
 
-  // Show loading if authenticated but teamData not loaded yet
   if (!teamData) {
     return (
-      <div className="app">
+      <div className="min-h-screen bg-slate-50">
         <LoadingAnimation message="Loading team data..." />
       </div>
     );
   }
 
   return (
-    <div className="app">
-      <div className="captain-dashboard">
-        {/* Connection Status Badge */}
+    <div className="min-h-screen bg-slate-50 text-slate-900">
+      <SoldAnimationOverlay
+        show={showSoldAnimation}
+        soldInfo={soldInfo}
+        getOptimizedPlayerPhoto={getOptimizedPlayerPhoto}
+        getOptimizedTeamLogo={getOptimizedTeamLogo}
+        placeholderImage={PLACEHOLDER_IMAGE}
+        defaultTeamLogo={DEFAULT_TEAM_LOGO}
+      />
+
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-4 sm:px-6 sm:py-6">
         {!isConnected && (
-          <div className="connection-warning">
+          <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-700">
             ⚠️ Connection lost. Reconnecting...
           </div>
         )}
 
-        {/* Header */}
-        <div className="dashboard-header">
-          <div className="team-info">
-            <div className="team-badge">
-              <img 
-                src={(teamData.logo && teamData.logo.trim() !== '') ? `${SOCKET_URL}${teamData.logo.replace(/^\//, '')}` : DEFAULT_TEAM_LOGO}
-                alt={teamData.teamName}
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  objectFit: 'cover',
-                  borderRadius: '12px'
-                }}
-                onError={(e) => {
-                  e.target.onerror = null;
-                  e.target.src = DEFAULT_TEAM_LOGO;
-                }}
-              />
-            </div>
-            <div>
-              <h2>{teamData.teamName}</h2>
-              <p className="captain-name">👤 {teamData.captainName}</p>
-            </div>
-          </div>
-          <button onClick={handleLogout} className="logout-button">
-            <span>🚪</span> Logout
-          </button>
-        </div>
+        <TeamHeader
+          teamData={teamData}
+          onLogout={handleLogout}
+          getOptimizedTeamLogo={getOptimizedTeamLogo}
+          defaultTeamLogo={DEFAULT_TEAM_LOGO}
+        />
 
-        {/* Budget Panel */}
-        <div className="budget-panel">
-          <div className="budget-item">
-            <div className="budget-icon">💰</div>
-            <div className="budget-details">
-              <span className="budget-label">Remaining</span>
-              <span className="budget-value">{teamData.remainingPoints}</span>
-            </div>
-          </div>
-          <div className="budget-item">
-            <div className="budget-icon">👥</div>
-            <div className="budget-details">
-              <span className="budget-label">Squad</span>
-              <span className="budget-value">{teamData.rosterSlotsFilled}/{config.maxSquadSize}</span>
-            </div>
-          </div>
-          {currentPlayer && (
-            <div className="budget-item" style={{ borderLeft: '2px solid #10b981' }}>
-              <div className="budget-icon">📊</div>
-              <div className="budget-details">
-                <span className="budget-label">Max Bid</span>
-                <span className="budget-value" style={{ color: '#10b981' }}>{getMaxAllowedBid()}</span>
-              </div>
-            </div>
-          )}
-        </div>
+        <BudgetProgress teamData={teamData} maxSquadSize={maxSquadSize} initialBudget={initialBudget} minBasePrice={minBasePrice} />
 
-        {/* Progress Bar */}
-        <div className="progress-container">
-          <div className="progress-header">
-            <span className="progress-label">🏏 Squad Progress</span>
-            <span className="progress-percentage">{Math.round((teamData.rosterSlotsFilled / config.maxSquadSize) * 100)}%</span>
-          </div>
-          <div className="progress-bar">
-            <div 
-              className="progress-fill"
-              style={{ width: `${(teamData.rosterSlotsFilled / config.maxSquadSize) * 100}%` }}
-            >
-              <span className="progress-shine"></span>
-            </div>
-          </div>
-          <div className="progress-stats">
-            <span>{teamData.rosterSlotsFilled} players</span>
-            <span>{config.maxSquadSize - teamData.rosterSlotsFilled} remaining</span>
-          </div>
-        </div>
+        <CurrentAuctionSection
+          currentPlayer={currentPlayer}
+          timerValue={timerValue}
+          currentBid={currentBid}
+          isHighestBidder={isHighestBidder}
+          bidSuccess={bidSuccess}
+          hasNoBids={hasNoBids}
+          canBid={canBid}
+          getNextBidAmount={getNextBidAmount}
+          maxSquadSize={maxSquadSize}
+          minBasePrice={minBasePrice}
+          teamData={teamData}
+          initialBudget={initialBudget}
+          handleBid={handleBid}
+          isConnected={isConnected}
+          error={error}
+          teamData={teamData}
+          maxSquadSize={maxSquadSize}
+          getOptimizedPlayerPhoto={getOptimizedPlayerPhoto}
+          placeholderImage={PLACEHOLDER_IMAGE}
+        />
 
-        {/* Current Player */
-        console.log('Current player photo URL:', currentPlayer?.photo)
-        }
-        {currentPlayer ? (
-          <div className="current-player-section">
-            <div className="section-header">
-              <h3>⚡ Current Auction</h3>
-            </div>
-            <div className="player-card-mobile">
-              <div className="player-photo-wrapper">
-                <img 
-                  
-                  src={(currentPlayer.photo && currentPlayer.photo.trim() !== '' && !currentPlayer.photo.includes('placeholder'))
-                    ? (currentPlayer.photo.startsWith('http') 
-                        ? currentPlayer.photo 
-                        : `${SOCKET_URL}uploads/${currentPlayer.photo.replace(/^\/+/, '')}`)
-                    : PLACEHOLDER_IMAGE
-                  } 
-                 
-                  alt={currentPlayer.name}
-                  className="player-photo-mobile"
-                  onError={(e) => { 
-                    e.target.onerror = null;
-                    e.target.src = PLACEHOLDER_IMAGE; 
-                  
-                  }}
-                />
-                <div className="photo-overlay"></div>
-              </div>
-              <div className="player-info-mobile">
-                <h4>{currentPlayer.name}</h4>
-                <div className="player-meta">
-                  <span className="player-category-mobile">{currentPlayer.category}</span>
-                  <span className="player-base-price">Base: {currentPlayer.basePrice}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Timer */}
-            <div className="timer-mobile" data-urgent={timerValue <= 5}>
-              <div className="timer-content">
-                <span className="timer-icon">{timerValue <= 5 ? '⚠️' : '⏱️'}</span>
-                <div className="timer-info">
-                  <span className="timer-label">Time Remaining</span>
-                  <span className="timer-value-mobile">{timerValue}s</span>
-                </div>
-              </div>
-              <div className="timer-bar" style={{ width: `${(timerValue / 30) * 100}%` }}></div>
-            </div>
-
-            {/* Current Bid */}
-            <div className="current-bid-mobile" data-my-bid={isHighestBidder}>
-              <div className="bid-info">
-                <span className="bid-label-mobile">💰 Current Bid</span>
-                <span className="bid-amount-mobile">{currentBid.amount}</span>
-                <div className="bid-team-info">
-                  {isHighestBidder && <span className="winning-badge">🏆 You're Winning!</span>}
-                  <span className="bid-team-mobile">{currentBid.teamName}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Bid Controls */}
-            <div className="bid-controls">
-              {!isHighestBidder && (
-                <div className="max-bid-info" style={{
-                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                  padding: '12px 16px',
-                  borderRadius: '12px',
-                  marginBottom: '12px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '10px',
-                  color: 'white',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)'
-                }}>
-                  <span style={{ fontSize: '20px' }}>📊</span>
-                  <div style={{ flex: 1 }}>
-                    <div>Max you can bid: {getMaxAllowedBid()}</div>
-                    <small style={{ fontSize: '11px', opacity: 0.9 }}>
-                      {config.maxSquadSize - teamData.rosterSlotsFilled - 1} more players × {config.minBasePrice} reserved
-                    </small>
-                  </div>
-                </div>
-              )}
-              {isHighestBidder ? (
-                <div className="highest-bidder-notice">
-                  <div className="notice-icon">🏆</div>
-                  <div>
-                    <p className="notice-title">You're the Highest Bidder!</p>
-                    <small>Wait for other teams to bid or win this player</small>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="bid-buttons-group">
-                    {hasNoBids && canBid(0) && (
-                      <button 
-                        className={`bid-button bid-button-base ${bidSuccess ? 'bid-success' : ''}`}
-                        onClick={() => handleBid(0)}
-                        disabled={!isConnected}
-                      >
-                        <span className="bid-button-icon">{bidSuccess ? '✓' : '🎯'}</span>
-                        <span className="bid-button-text">
-                          {bidSuccess ? 'Bid Placed!' : `${getNextBidAmount(0)}`}
-                        </span>
-                        <span className="bid-button-label">{bidSuccess ? '' : 'Base Price'}</span>
-                      </button>
-                    )}
-                    {canBid(5) && (
-                      <button 
-                        className={`bid-button ${bidSuccess ? 'bid-success' : ''}`}
-                        onClick={() => handleBid(5)}
-                        disabled={!isConnected}
-                      >
-                        <span className="bid-button-icon">{bidSuccess ? '✓' : '💰'}</span>
-                        <span className="bid-button-text">
-                          {bidSuccess ? 'Bid Placed!' : `${getNextBidAmount(5)}`}
-                        </span>
-                        <span className="bid-button-label">{bidSuccess ? '' : '+5L'}</span>
-                      </button>
-                    )}
-                    {canBid(10) && (
-                      <button 
-                        className={`bid-button ${bidSuccess ? 'bid-success' : ''}`}
-                        onClick={() => handleBid(10)}
-                        disabled={!isConnected}
-                      >
-                        <span className="bid-button-icon">{bidSuccess ? '✓' : '🚀'}</span>
-                        <span className="bid-button-text">
-                          {bidSuccess ? 'Bid Placed!' : `${getNextBidAmount(10)}`}
-                        </span>
-                        <span className="bid-button-label">{bidSuccess ? '' : '+10L'}</span>
-                      </button>
-                    )}
-                  </div>
-                  {!canBid(0) && !canBid(5) && !canBid(10) && (
-                    <div className="cannot-bid">
-                      <div className="notice-icon">⛔</div>
-                      <div>
-                        <p className="notice-title">Cannot Bid</p>
-                        <small>
-                          Max allowed: {getMaxAllowedBid()} 
-                          <br />
-                          (Need {(config.maxSquadSize - teamData.rosterSlotsFilled - 1) * config.minBasePrice} to complete {config.maxSquadSize - teamData.rosterSlotsFilled - 1} more players)
-                        </small>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-
-            {error && <div className="error-message-mobile">{error}</div>}
-          </div>
-        ) : (
-          <div className="waiting-section">
-            <div className="waiting-animation">
-              <div className="waiting-icon">⏳</div>
-              <div className="pulse-ring"></div>
-            </div>
-            <h3>Waiting for Next Player</h3>
-            <p>The admin will start the auction soon</p>
-            <div className="waiting-dots">
-              <span></span>
-              <span></span>
-              <span></span>
-            </div>
-          </div>
-        )}
-
-        {/* My Squad */}
-        {teamData.players && teamData.players.length > 0 && (
-          <div className="my-squad">
-            <div className="squad-header">
-              <div>
-                <h3>🏏 My Squad</h3>
-                <span className="squad-count">{teamData.players.length} player{teamData.players.length !== 1 ? 's' : ''}</span>
-              </div>
-              <a 
-                href={`${API_URL}/teams/${teamData.id}/download`} 
-                download 
-                className="download-squad-btn"
-              >
-                <span>📥</span> Download
-              </a>
-            </div>
-            <div className="squad-list">
-              {teamData.players.map((player) => (
-                <div key={player._id || player.name} className="squad-player">
-                  <div className="squad-player-info">
-                    <span className="squad-player-name">{player.name}</span>
-                    <span className="squad-player-category">{player.category}</span>
-                  </div>
-                  <span className="squad-player-price">{player.soldPrice}</span>
-                </div>
-              ))}
-            </div>
-            <div className="squad-summary">
-              <div className="summary-item">
-                <span className="summary-label">Total Spent</span>
-                <span className="summary-value">{teamData.players.reduce((sum, p) => sum + p.soldPrice, 0)}</span>
-              </div>
-              <div className="summary-item">
-                <span className="summary-label">Avg Price</span>
-                <span className="summary-value">{Math.round(teamData.players.reduce((sum, p) => sum + p.soldPrice, 0) / teamData.players.length)}</span>
-              </div>
-            </div>
-          </div>
-        )}
+        <PlayersSection
+          showAllPlayers={showAllPlayers}
+          setShowAllPlayers={setShowAllPlayers}
+          handleViewAllPlayers={handleViewAllPlayers}
+          loadingPlayers={loadingPlayers}
+          allPlayers={allPlayers}
+          filterStatus={filterStatus}
+          setFilterStatus={setFilterStatus}
+          teamData={teamData}
+          apiUrl={API_URL}
+          getOptimizedPlayerPhoto={getOptimizedPlayerPhoto}
+          placeholderImage={PLACEHOLDER_IMAGE}
+        />
       </div>
     </div>
   );
