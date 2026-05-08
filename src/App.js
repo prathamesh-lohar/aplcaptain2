@@ -10,7 +10,6 @@ import PlayersSection from './components/PlayersSection';
 
 const SOCKET_URL = process.env.REACT_APP_SOCKET_URL;
 const API_URL = process.env.REACT_APP_API_URL;
-const MAX_SQUAD_SIZE = Number.parseInt(process.env.REACT_APP_MAX_SQUAD_SIZE, 10) || 11;
 
 // Ensure URLs end with a slash for proper path construction
 const normalizeUrl = (url) => url && (url.endsWith('/') ? url : url + '/');
@@ -506,8 +505,6 @@ function App() {
           handleBid={handleBid}
           isConnected={isConnected}
           error={error}
-          teamData={teamData}
-          maxSquadSize={maxSquadSize}
           getOptimizedPlayerPhoto={getOptimizedPlayerPhoto}
           placeholderImage={PLACEHOLDER_IMAGE}
         />
